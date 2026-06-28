@@ -1,0 +1,24 @@
+.idea/
+.vscode/
+
+# Python
+src/backend/.venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environment files (secrets)
+src/backend/.env
+src/backend/.env.app_config
+src/frontend/.env
+
+# JWT keys — generated locally via `make keys` (never commit secrets)
+src/backend/jwt-private.pem
+src/backend/jwt-public.pem
+
+# Node / build artifacts
+node_modules
+dist
