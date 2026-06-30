@@ -47,7 +47,7 @@ jobs:
           pip install
           "sqlalchemy[asyncio]" asyncpg greenlet inflect bcrypt
           pydantic pydantic-settings python-dotenv openai pgvector
-          pytest pytest-asyncio
+          fpdf2 pypdf pytest pytest-asyncio
       - name: Run tests
         run: pytest -q
 

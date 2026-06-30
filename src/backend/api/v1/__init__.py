@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from core.config import settings
 from features.chats.api.chat import router as chat_router
+from features.documents.api.document import router as documents_router
 from features.messages.api.message import router as message_router
 from features.users.api.user import router as users_router
 
@@ -26,4 +27,10 @@ router.include_router(
     router=users_router,
     tags=[settings.api.v1.users[1:].capitalize()],
     prefix=settings.api.v1.users,
+)
+
+router.include_router(
+    router=documents_router,
+    tags=[settings.api.v1.documents[1:].capitalize()],
+    prefix=settings.api.v1.documents,
 )

@@ -78,6 +78,7 @@ class ApiV1Prefix(BaseModel):
     chats: str = "/chats"
     messages: str = "/messages"
     users: str = "/users"
+    documents: str = "/documents"
 
 
 class ApiPrefix(BaseModel):

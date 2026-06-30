@@ -15,12 +15,25 @@ from features.messages.schemas import (
     MessageRead,
     SourceSchema,
 )
-from features.rag import RetrievedChunk, search_knowledge
+from features.rag import RetrievedChunk, search_chat_documents, search_knowledge
 from shared.enums import SenderEnum
 
 FALLBACK_ANSWER = (
     "Извините, не удалось сформировать ответ. Попробуйте переформулировать запрос."
 )
+
+# How many grounding chunks to inject into the agent context at most.
+MAX_CONTEXT_CHUNKS = 6
+
+
+async def _retrieve_grounding(
+    session: AsyncSession, chat_id: int, query: str
+) -> list[RetrievedChunk]:
+    """Gather grounding chunks: the chat's uploaded documents first (most
+    specific), then the global knowledge base, capped to a small budget."""
+    doc_chunks = await search_chat_documents(session, chat_id, query)
+    kb_chunks = await search_knowledge(session, query)
+    return (doc_chunks + kb_chunks)[:MAX_CONTEXT_CHUNKS]
 
 
 def _steps_to_schema(steps: list[AgentStep]) -> list[AgentStepSchema]:
@@ -65,7 +78,9 @@ async def send_message(
         }
 
     history = await _chronological_history(session, message_create.chat_id)
-    chunks = await search_knowledge(session, message_create.content)
+    chunks = await _retrieve_grounding(
+        session, message_create.chat_id, message_create.content
+    )
 
     result = await run_agent(history, knowledge=[chunk.content for chunk in chunks])
 
@@ -131,7 +146,9 @@ async def stream_message(
         return
 
     history = await _chronological_history(session, message_create.chat_id)
-    retrieved = await search_knowledge(session, message_create.content)
+    retrieved = await _retrieve_grounding(
+        session, message_create.chat_id, message_create.content
+    )
     if retrieved:
         yield _sse(
             "sources",
@@ -140,8 +157,9 @@ async def stream_message(
 
     steps: list[AgentStep] = []
     content = ""
+    streamed_any = False
     async for kind, payload in run_agent_events(
-        history, knowledge=[chunk.content for chunk in retrieved]
+        history, knowledge=[chunk.content for chunk in retrieved], stream=True
     ):
         if kind == "step":
             steps.append(payload)
@@ -153,11 +171,17 @@ async def stream_message(
                     "result": payload.result,
                 },
             )
+        elif kind == "token":
+            streamed_any = True
+            yield _sse("token", {"delta": payload})
         else:
             content = payload or FALLBACK_ANSWER
 
-    for chunk in _chunk_text(content):
-        yield _sse("token", {"delta": chunk})
+    # If the model produced no streamed tokens (e.g. empty answer -> fallback),
+    # still emit the text so the UI shows something.
+    if not streamed_any:
+        for chunk in _chunk_text(content):
+            yield _sse("token", {"delta": chunk})
 
     llm_message = await crud.create_message(
         session,

@@ -62,4 +62,66 @@ export const messageService = {
       }
     }
   },
+
+  /**
+   * Render `content` to a DOCX or PDF file on the backend and trigger a download.
+   * `format` is "docx" | "pdf". `title`/`filename` are optional (used for the
+   * file name and document heading).
+   */
+  async exportDocument({ format, content, title, filename }) {
+    const response = await fetch(`${API_BASE_URL}/documents/export`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ format, content, title, filename }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Export failed: ${response.status}`);
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${filename || title || "document"}.${format}`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  },
+
+  /**
+   * Upload a PDF to a chat for RAG grounding. Returns {filename, pages, chunks}.
+   * Throws an Error with the backend message on failure (e.g. non-PDF, a scan).
+   */
+  async uploadDocument(chatId, file) {
+    const form = new FormData();
+    form.append("chat_id", String(chatId));
+    form.append("file", file);
+
+    const response = await fetch(`${API_BASE_URL}/documents/upload`, {
+      method: "POST",
+      credentials: "include",
+      body: form,
+    });
+
+    if (!response.ok) {
+      let detail = `Upload failed: ${response.status}`;
+      try {
+        const body = await response.json();
+        if (body?.detail) detail = body.detail;
+      } catch {
+        // keep the generic message
+      }
+      throw new Error(detail);
+    }
+    return response.json();
+  },
+
+  /** List documents attached to a chat: [{filename, chunks}]. */
+  async listDocuments(chatId) {
+    const response = await api.get("/documents", { params: { chat_id: chatId } });
+    return response.data;
+  },
 };

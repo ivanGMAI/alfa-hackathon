@@ -1,11 +1,54 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useChat } from "../../contexts/ChatContext";
 import MarkdownRenderer from "../MarkdownRenderer";
+import DocumentCard from "./DocumentCard";
+
+// A `generate_document` step carries a JSON result `{doc_type, content}`. When it
+// parses and has content, render a rich document card with export actions;
+// otherwise fall back to the generic collapsible step view.
+const renderStep = (step, idx) => {
+  if (step.tool === "generate_document") {
+    try {
+      const parsed = JSON.parse(step.result);
+      if (parsed && parsed.content) {
+        return (
+          <DocumentCard
+            key={idx}
+            docType={parsed.doc_type}
+            content={parsed.content}
+          />
+        );
+      }
+    } catch {
+      // not valid JSON — fall through to the generic step view
+    }
+  }
+
+  return (
+    <details key={idx} className="agent-step">
+      <summary>🔧 {step.tool}</summary>
+      <pre className="agent-step-body">
+        {JSON.stringify(step.arguments, null, 2)}
+        {"\n→ "}
+        {step.result}
+      </pre>
+    </details>
+  );
+};
 
 const ChatWindow = () => {
-  const { currentChat, messages, isSendingMessage, sendMessage } = useChat();
+  const {
+    currentChat,
+    messages,
+    isSendingMessage,
+    sendMessage,
+    chatDocuments,
+    isUploadingDocument,
+    uploadDocument,
+  } = useChat();
   const [inputValue, setInputValue] = useState("");
   const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -14,6 +57,14 @@ const ChatWindow = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  const handleFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-uploading the same file
+    if (file) {
+      await uploadDocument(file);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -119,16 +170,7 @@ const ChatWindow = () => {
                   </div>
                   {message.steps && message.steps.length > 0 && (
                     <div className="agent-steps">
-                      {message.steps.map((step, idx) => (
-                        <details key={idx} className="agent-step">
-                          <summary>🔧 {step.tool}</summary>
-                          <pre className="agent-step-body">
-                            {JSON.stringify(step.arguments, null, 2)}
-                            {"\n→ "}
-                            {step.result}
-                          </pre>
-                        </details>
-                      ))}
+                      {message.steps.map(renderStep)}
                     </div>
                   )}
                   {message.sources && message.sources.length > 0 && (
@@ -156,8 +198,34 @@ const ChatWindow = () => {
 
       {/* Форма ввода */}
       <div className="chat-input-container">
+        {chatDocuments && chatDocuments.length > 0 && (
+          <div className="attached-docs">
+            <span className="attached-docs-label">📎 Документы чата:</span>
+            {chatDocuments.map((doc) => (
+              <span key={doc.filename} className="attached-doc" title={doc.filename}>
+                {doc.filename} · {doc.chunks} фрагм.
+              </span>
+            ))}
+          </div>
+        )}
         <form onSubmit={handleSubmit} className="chat-input-form">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/pdf,.pdf"
+            onChange={handleFileChange}
+            style={{ display: "none" }}
+          />
           <div className="input-wrapper">
+            <button
+              type="button"
+              className="attach-button"
+              title="Прикрепить PDF для анализа"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploadingDocument || !currentChat}
+            >
+              {isUploadingDocument ? <div className="spinner"></div> : "📎"}
+            </button>
             <textarea
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}

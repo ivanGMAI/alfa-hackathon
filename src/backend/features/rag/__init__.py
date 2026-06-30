@@ -1,4 +1,10 @@
-__all__ = ["KnowledgeChunk", "RetrievedChunk", "search_knowledge"]
+__all__ = [
+    "KnowledgeChunk",
+    "ChatDocumentChunk",
+    "RetrievedChunk",
+    "search_knowledge",
+    "search_chat_documents",
+]
 
-from .models import KnowledgeChunk
-from .retrieval import RetrievedChunk, search_knowledge
+from .models import ChatDocumentChunk, KnowledgeChunk
+from .retrieval import RetrievedChunk, search_chat_documents, search_knowledge

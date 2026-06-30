@@ -2,17 +2,18 @@ FROM python:3.13.0-bookworm
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-ENV PATH="/root/.local/bin:${PATH}"
+# uv: more network-resilient than poetry on flaky connections (parallel + retries).
+ENV UV_HTTP_TIMEOUT=120
+ENV UV_LINK_MODE=copy
 
 WORKDIR /backend
 
-RUN pip install --upgrade pip wheel "poetry==2.1.1"
+RUN pip install --no-cache-dir --upgrade pip uv
 
-RUN poetry config virtualenvs.create false
-
-COPY backend/pyproject.toml backend/poetry.lock ./
-
-RUN poetry install
+# Install runtime + dev dependencies (PEP 621 + dependency-groups) into the
+# system environment. Dev tools are needed for `make test` / `make lint`.
+COPY backend/pyproject.toml ./
+RUN uv pip install --system -r pyproject.toml --group dev
 
 COPY backend ./
 

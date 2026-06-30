@@ -51,6 +51,16 @@ def _assistant_entry(message) -> dict:
     }
 
 
+async def _run_turn(client, messages, tools, stream):
+    """Execute one LLM turn, yielding ``("token", text)`` deltas (only when
+    ``stream`` is set) and finally ``("message", assistant_message)``."""
+    if stream:
+        async for kind, payload in client.stream(messages, tools=tools):
+            yield kind, payload
+    else:
+        yield "message", await client.complete(messages, tools=tools)
+
+
 async def run_agent_events(
     history,
     *,
@@ -58,9 +68,14 @@ async def run_agent_events(
     max_steps: int | None = None,
     trace: AgentTrace | None = None,
     knowledge: list[str] | None = None,
+    stream: bool = False,
 ) -> AsyncIterator[tuple[str, object]]:
-    """Drive the agent, yielding ``("step", AgentStep)`` events as tools run and a
-    final ``("final", content)`` event with the answer text."""
+    """Drive the agent, yielding events as work happens:
+
+    - ``("token", text)`` for each answer delta (only when ``stream=True``),
+    - ``("step", AgentStep)`` as each tool runs,
+    - a final ``("final", content)`` with the full answer text.
+    """
     client = client or LLMClient()
     max_steps = max_steps or settings.llm.max_agent_steps
     messages = build_messages(history, knowledge=knowledge)
@@ -68,7 +83,12 @@ async def run_agent_events(
 
     for _ in range(max_steps):
         started = perf_counter()
-        message = await client.complete(messages, tools=tools)
+        message = None
+        async for kind, payload in _run_turn(client, messages, tools, stream):
+            if kind == "token":
+                yield "token", payload
+            else:
+                message = payload
         if trace is not None:
             trace.record_llm_call(
                 (perf_counter() - started) * 1000,
@@ -102,7 +122,12 @@ async def run_agent_events(
 
     # Step budget exhausted — force a final answer without tools.
     started = perf_counter()
-    final = await client.complete(messages, tools=None)
+    final = None
+    async for kind, payload in _run_turn(client, messages, None, stream):
+        if kind == "token":
+            yield "token", payload
+        else:
+            final = payload
     if trace is not None:
         trace.record_llm_call(
             (perf_counter() - started) * 1000,

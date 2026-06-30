@@ -38,6 +38,21 @@ class ScriptedClient:
         return self._responses.pop(0)
 
 
+class ScriptedStreamClient:
+    """Streams pre-scripted turns. Each turn is ``(tokens, assistant_message)``."""
+
+    def __init__(self, turns):
+        self._turns = list(turns)
+        self.calls = []
+
+    async def stream(self, messages, tools=None, **kwargs):
+        self.calls.append({"messages": list(messages), "tools": tools})
+        tokens, message = self._turns.pop(0)
+        for token in tokens:
+            yield "token", token
+        yield "message", message
+
+
 class HistMsg:
     def __init__(self, sender, content):
         self.sender = sender
@@ -121,3 +136,52 @@ async def test_run_agent_events_emits_step_then_final():
 
     kinds = [kind async for kind, _ in run_agent_events(HISTORY, client=client)]
     assert kinds == ["step", "final"]
+
+
+@pytest.mark.asyncio
+async def test_streaming_emits_tokens_then_final():
+    client = ScriptedStreamClient(
+        [(["Здра", "вствуй", "те!"], FakeMessage(content="Здравствуйте!"))]
+    )
+
+    events = [
+        (kind, payload)
+        async for kind, payload in run_agent_events(HISTORY, client=client, stream=True)
+    ]
+
+    kinds = [kind for kind, _ in events]
+    assert kinds == ["token", "token", "token", "final"]
+    streamed = "".join(p for k, p in events if k == "token")
+    assert streamed == "Здравствуйте!"
+    assert events[-1] == ("final", "Здравствуйте!")
+
+
+@pytest.mark.asyncio
+async def test_streaming_with_tool_call_then_streamed_answer():
+    tool_call = FakeToolCall(
+        id="c1",
+        function=FakeFunction(
+            name="financial_calculator",
+            arguments='{"operation": "margin", "revenue": 100, "cost": 60}',
+        ),
+    )
+    client = ScriptedStreamClient(
+        [
+            ([], FakeMessage(tool_calls=[tool_call])),  # tool turn, no tokens
+            (["Маржа ", "40%."], FakeMessage(content="Маржа 40%.")),
+        ]
+    )
+
+    events = [
+        (kind, payload)
+        async for kind, payload in run_agent_events(HISTORY, client=client, stream=True)
+    ]
+
+    kinds = [kind for kind, _ in events]
+    assert kinds[0] == "step"  # tool runs before the answer streams
+    assert "token" in kinds
+    assert kinds[-1] == "final"
+    streamed = "".join(p for k, p in events if k == "token")
+    assert streamed == "Маржа 40%."
+    # The tool result must be fed back to the model on the second turn.
+    assert any(m.get("role") == "tool" for m in client.calls[1]["messages"])

@@ -46,6 +46,9 @@ export const ChatProvider = ({ children }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingChat, setIsLoadingChat] = useState(false);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
+  // Documents (PDF) attached to the current chat for RAG grounding.
+  const [chatDocuments, setChatDocuments] = useState([]);
+  const [isUploadingDocument, setIsUploadingDocument] = useState(false);
 
   // Сохраняем чаты в localStorage при изменении
   useEffect(() => {
@@ -60,6 +63,27 @@ export const ChatProvider = ({ children }) => {
       setMessages(lastChat.messages || []);
     }
   }, [chats, currentChat]);
+
+  // Загружаем список прикреплённых документов при смене активного чата
+  useEffect(() => {
+    const chatId = currentChat?.id;
+    if (!chatId) {
+      setChatDocuments([]);
+      return;
+    }
+    let cancelled = false;
+    messageService
+      .listDocuments(chatId)
+      .then((docs) => {
+        if (!cancelled) setChatDocuments(docs || []);
+      })
+      .catch(() => {
+        if (!cancelled) setChatDocuments([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentChat?.id]);
 
   const createNewChat = async (chatData = {}) => {
     try {
@@ -153,51 +177,88 @@ export const ChatProvider = ({ children }) => {
       return;
     }
 
+    const text = content.trim();
+    const stamp = Date.now();
+    const userId = `temp-user-${stamp}`;
+    const aiId = `temp-ai-${stamp}`;
+
+    // Обновляет растущее сообщение ассистента по его временному id.
+    const updateAi = (updater) =>
+      setMessages((prev) =>
+        prev.map((msg) => (msg.id === aiId ? updater(msg) : msg)),
+      );
+
     try {
       setIsSendingMessage(true);
 
-      // Создаем временное сообщение пользователя
-      const tempUserMessage = {
-        id: `temp-${Date.now()}`,
-        content: content.trim(),
-        sender: "user",
-        created_at: new Date().toISOString(),
-        isTemp: true,
-      };
+      // Временное сообщение пользователя + плейсхолдер ассистента,
+      // который будет наполняться токенами по мере стриминга.
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: userId,
+          content: text,
+          sender: "user",
+          created_at: new Date().toISOString(),
+          isTemp: true,
+        },
+        {
+          id: aiId,
+          content: "",
+          sender: "ai",
+          created_at: new Date().toISOString(),
+          isTemp: true,
+          steps: [],
+          sources: null,
+        },
+      ]);
 
-      setMessages((prev) => [...prev, tempUserMessage]);
+      await messageService.streamMessage(
+        { chat_id: currentChat.id, content: text },
+        (event, data) => {
+          if (event === "user_message") {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === userId
+                  ? {
+                      ...msg,
+                      id: data.id ?? msg.id,
+                      content: data.content ?? msg.content,
+                      created_at: data.created_at ?? msg.created_at,
+                      isTemp: false,
+                    }
+                  : msg,
+              ),
+            );
+          } else if (event === "sources") {
+            updateAi((msg) => ({ ...msg, sources: data }));
+          } else if (event === "step") {
+            updateAi((msg) => ({ ...msg, steps: [...(msg.steps || []), data] }));
+          } else if (event === "token") {
+            updateAi((msg) => ({ ...msg, content: msg.content + (data.delta || "") }));
+          } else if (event === "done") {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === aiId
+                  ? {
+                      ...msg,
+                      id: data.id ?? msg.id,
+                      content: data.content ?? msg.content,
+                      created_at: data.created_at ?? msg.created_at,
+                      steps: data.steps?.length ? data.steps : msg.steps || null,
+                      sources: data.sources?.length
+                        ? data.sources
+                        : msg.sources || null,
+                      isTemp: false,
+                    }
+                  : msg,
+              ),
+            );
+          }
+        },
+      );
 
-      // Отправляем сообщение на бэкенд
-      const response = await messageService.sendMessage({
-        chat_id: currentChat.id,
-        content: content.trim(),
-      });
-
-      console.log("✅ Message sent successfully:", response);
-
-      // Удаляем временное сообщение и добавляем настоящие
-      setMessages((prev) => {
-        const filtered = prev.filter((msg) => !msg.isTemp);
-        return [
-          ...filtered,
-          {
-            ...response.user_message,
-            id: response.user_message.id || `user-${Date.now()}`,
-            content: response.user_message.content,
-            sender: "user",
-            created_at: response.user_message.created_at,
-          },
-          {
-            ...response.llm_message,
-            id: response.llm_message.id || `ai-${Date.now()}`,
-            content: response.llm_message.content,
-            sender: "ai",
-            created_at: response.llm_message.created_at,
-            steps: response.llm_message.steps || null,
-            sources: response.llm_message.sources || null,
-          },
-        ];
-      });
+      console.log("✅ Message streamed successfully");
 
       // Обновляем последнее сообщение в чате
       setChats((prev) =>
@@ -205,7 +266,7 @@ export const ChatProvider = ({ children }) => {
           chat.id === currentChat.id
             ? {
                 ...chat,
-                last_message: content.trim(),
+                last_message: text,
                 updated_at: new Date().toISOString(),
               }
             : chat,
@@ -214,19 +275,17 @@ export const ChatProvider = ({ children }) => {
     } catch (error) {
       console.error("❌ Failed to send message:", error);
 
-      // Удаляем временное сообщение при ошибке
-      setMessages((prev) => prev.filter((msg) => !msg.isTemp));
-
-      // Показываем сообщение об ошибке
-      const errorMessage = {
-        id: `error-${Date.now()}`,
-        content: "Ошибка при отправке сообщения. Попробуйте еще раз.",
-        sender: "system",
-        created_at: new Date().toISOString(),
-        isError: true,
-      };
-
-      setMessages((prev) => [...prev, errorMessage]);
+      // Удаляем временные сообщения и показываем ошибку
+      setMessages((prev) => [
+        ...prev.filter((msg) => msg.id !== userId && msg.id !== aiId),
+        {
+          id: `error-${Date.now()}`,
+          content: "Ошибка при отправке сообщения. Попробуйте еще раз.",
+          sender: "system",
+          created_at: new Date().toISOString(),
+          isError: true,
+        },
+      ]);
     } finally {
       setIsSendingMessage(false);
     }
@@ -309,6 +368,51 @@ export const ChatProvider = ({ children }) => {
     setMessages([]);
   };
 
+  const uploadDocument = async (file) => {
+    if (!currentChat || !file) return;
+
+    try {
+      setIsUploadingDocument(true);
+      const summary = await messageService.uploadDocument(currentChat.id, file);
+
+      // Refresh the attached-documents list (dedupe by filename).
+      setChatDocuments((prev) => {
+        const others = prev.filter((doc) => doc.filename !== summary.filename);
+        return [
+          ...others,
+          { filename: summary.filename, chunks: summary.chunks },
+        ].sort((a, b) => a.filename.localeCompare(b.filename));
+      });
+
+      // Confirmation message in the chat thread.
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `doc-${Date.now()}`,
+          content: `📄 Документ «${summary.filename}» загружен (${summary.pages} стр., ${summary.chunks} фрагм.). Теперь можно задавать вопросы по нему.`,
+          sender: "system",
+          created_at: new Date().toISOString(),
+        },
+      ]);
+
+      return summary;
+    } catch (error) {
+      console.error("❌ Failed to upload document:", error);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `doc-error-${Date.now()}`,
+          content: `Не удалось загрузить документ: ${error.message}`,
+          sender: "system",
+          created_at: new Date().toISOString(),
+          isError: true,
+        },
+      ]);
+    } finally {
+      setIsUploadingDocument(false);
+    }
+  };
+
   const value = {
     // State
     chats,
@@ -317,6 +421,8 @@ export const ChatProvider = ({ children }) => {
     isLoading,
     isLoadingChat,
     isSendingMessage,
+    chatDocuments,
+    isUploadingDocument,
 
     // Chat actions
     createNewChat,
@@ -330,6 +436,7 @@ export const ChatProvider = ({ children }) => {
     // Message actions
     sendMessage,
     addMessage,
+    uploadDocument,
   };
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
